@@ -1,5 +1,6 @@
 # Changelog
 
+## v0.15.0 - 14.01.2026
 - Update to Bevy 0.18
 - depend on Bevy subcrates
 - remove default feature (accidentally was `csv`)
