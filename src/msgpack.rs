@@ -1,8 +1,9 @@
 use bevy_app::{App, Plugin};
 use bevy_asset::io::Reader;
-use bevy_asset::{Asset, AssetApp, AssetLoader, LoadContext};
+use bevy_asset::{Asset, AssetApp, AssetLoader, AsyncWriteExt, LoadContext, saver::AssetSaver};
 use bevy_reflect::TypePath;
 use rmp_serde::from_slice;
+use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 use thiserror::Error;
 
@@ -45,17 +46,24 @@ pub struct MsgPackAssetLoader<A> {
     _marker: PhantomData<A>,
 }
 
-/// Possible errors that can be produced by [`MsgPackAssetLoader`]
+/// Possible errors that can be produced by [`MsgPackAssetLoader`] or [`MsgPackAssetSaver`]
 #[non_exhaustive]
 #[derive(Debug, Error)]
-pub enum MsgPackLoaderError {
+pub enum MsgPackAssetError {
     /// An [IO Error](std::io::Error)
     #[error("Could not read the file: {0}")]
     Io(#[from] std::io::Error),
-    /// A [`MessagePack` Error](rmp_serde::decode::Error)
+    /// A [`MessagePack` decoding Error](rmp_serde::decode::Error)
     #[error("Could not parse MessagePack: {0}")]
-    MsgPackError(#[from] rmp_serde::decode::Error),
+    MsgPackDecodeError(#[from] rmp_serde::decode::Error),
+    /// A [`MessagePack` encoding Error](rmp_serde::encode::Error)
+    #[error("Could not serialize MessagePack: {0}")]
+    MsgPackEncodeError(#[from] rmp_serde::encode::Error),
 }
+
+/// Deprecated alias for [`MsgPackAssetError`]
+#[deprecated(since = "0.15.0", note = "Use MsgPackAssetError instead")]
+pub type MsgPackLoaderError = MsgPackAssetError;
 
 impl<A> AssetLoader for MsgPackAssetLoader<A>
 where
@@ -63,7 +71,7 @@ where
 {
     type Asset = A;
     type Settings = ();
-    type Error = MsgPackLoaderError;
+    type Error = MsgPackAssetError;
 
     async fn load(
         &self,
@@ -79,5 +87,37 @@ where
 
     fn extensions(&self) -> &[&str] {
         &self.extensions
+    }
+}
+
+/// Saves your asset type `A` to `MessagePack` files
+#[derive(TypePath)]
+pub struct MsgPackAssetSaver<A> {
+    _marker: PhantomData<A>,
+}
+
+impl<A> Default for MsgPackAssetSaver<A> {
+    fn default() -> Self {
+        Self {
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<A: Asset + for<'de> Deserialize<'de> + Serialize> AssetSaver for MsgPackAssetSaver<A> {
+    type Asset = A;
+    type Settings = ();
+    type OutputLoader = MsgPackAssetLoader<A>;
+    type Error = MsgPackAssetError;
+
+    async fn save(
+        &self,
+        writer: &mut bevy_asset::io::Writer,
+        asset: bevy_asset::saver::SavedAsset<'_, Self::Asset>,
+        _settings: &Self::Settings,
+    ) -> Result<<Self::OutputLoader as AssetLoader>::Settings, Self::Error> {
+        let bytes = rmp_serde::to_vec(asset.get())?;
+        writer.write_all(&bytes).await?;
+        Ok(())
     }
 }

@@ -1,7 +1,8 @@
 use bevy_app::{App, Plugin};
 use bevy_asset::io::Reader;
-use bevy_asset::{Asset, AssetApp, AssetLoader, LoadContext};
+use bevy_asset::{Asset, AssetApp, AssetLoader, AsyncWriteExt, LoadContext, saver::AssetSaver};
 use bevy_reflect::TypePath;
+use serde::{Deserialize, Serialize};
 use serde_yaml::from_slice;
 use std::marker::PhantomData;
 use thiserror::Error;
@@ -45,17 +46,21 @@ pub struct YamlAssetLoader<A> {
     _marker: PhantomData<A>,
 }
 
-/// Possible errors that can be produced by [`YamlAssetLoader`]
+/// Possible errors that can be produced by [`YamlAssetLoader`] or [`YamlAssetSaver`]
 #[non_exhaustive]
 #[derive(Debug, Error)]
-pub enum YamlLoaderError {
+pub enum YamlAssetError {
     /// An [IO Error](std::io::Error)
     #[error("Could not read the file: {0}")]
     Io(#[from] std::io::Error),
     /// A [YAML Error](serde_yaml::Error)
-    #[error("Could not parse YAML: {0}")]
+    #[error("Could not parse/serialize YAML: {0}")]
     YamlError(#[from] serde_yaml::Error),
 }
+
+/// Deprecated alias for [`YamlAssetError`]
+#[deprecated(since = "0.15.0", note = "Use YamlAssetError instead")]
+pub type YamlLoaderError = YamlAssetError;
 
 impl<A> AssetLoader for YamlAssetLoader<A>
 where
@@ -63,7 +68,7 @@ where
 {
     type Asset = A;
     type Settings = ();
-    type Error = YamlLoaderError;
+    type Error = YamlAssetError;
 
     async fn load(
         &self,
@@ -79,5 +84,37 @@ where
 
     fn extensions(&self) -> &[&str] {
         &self.extensions
+    }
+}
+
+/// Saves your asset type `A` to YAML files
+#[derive(TypePath)]
+pub struct YamlAssetSaver<A> {
+    _marker: PhantomData<A>,
+}
+
+impl<A> Default for YamlAssetSaver<A> {
+    fn default() -> Self {
+        Self {
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<A: Asset + for<'de> Deserialize<'de> + Serialize> AssetSaver for YamlAssetSaver<A> {
+    type Asset = A;
+    type Settings = ();
+    type OutputLoader = YamlAssetLoader<A>;
+    type Error = YamlAssetError;
+
+    async fn save(
+        &self,
+        writer: &mut bevy_asset::io::Writer,
+        asset: bevy_asset::saver::SavedAsset<'_, Self::Asset>,
+        _settings: &Self::Settings,
+    ) -> Result<<Self::OutputLoader as AssetLoader>::Settings, Self::Error> {
+        let yaml = serde_yaml::to_string(asset.get())?;
+        writer.write_all(yaml.as_bytes()).await?;
+        Ok(())
     }
 }

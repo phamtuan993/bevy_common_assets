@@ -104,4 +104,4 @@ required-features = ["ron", "json"]
 [[example]]
 name = "asset_savers"
 path = "examples/asset_savers/asset_savers.rs"
-required-features = ["ron", "json", "postcard"]
+required-features = ["ron", "json", "postcard", "cbor", "msgpack", "toml", "yaml"]

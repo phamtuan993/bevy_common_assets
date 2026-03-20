@@ -1,7 +1,8 @@
 use bevy_app::{App, Plugin};
 use bevy_asset::io::Reader;
-use bevy_asset::{Asset, AssetApp, AssetLoader, LoadContext};
+use bevy_asset::{Asset, AssetApp, AssetLoader, AsyncWriteExt, LoadContext, saver::AssetSaver};
 use bevy_reflect::TypePath;
+use serde::{Deserialize, Serialize};
 use serde_json::from_slice;
 use std::marker::PhantomData;
 use thiserror::Error;
@@ -45,17 +46,21 @@ pub struct JsonAssetLoader<A> {
     _marker: PhantomData<A>,
 }
 
-/// Possible errors that can be produced by [`JsonAssetLoader`]
+/// Possible errors that can be produced by [`JsonAssetLoader`] or [`JsonAssetSaver`]
 #[non_exhaustive]
 #[derive(Debug, Error)]
-pub enum JsonLoaderError {
+pub enum JsonAssetError {
     /// An [IO Error](std::io::Error)
     #[error("Could not read the file: {0}")]
     Io(#[from] std::io::Error),
     /// A [JSON Error](serde_json::error::Error)
-    #[error("Could not parse the JSON: {0}")]
+    #[error("Could not parse/serialize JSON: {0}")]
     JsonError(#[from] serde_json::error::Error),
 }
+
+/// Deprecated alias for [`JsonAssetError`]
+#[deprecated(since = "0.15.0", note = "Use JsonAssetError instead")]
+pub type JsonLoaderError = JsonAssetError;
 
 impl<A> AssetLoader for JsonAssetLoader<A>
 where
@@ -63,7 +68,7 @@ where
 {
     type Asset = A;
     type Settings = ();
-    type Error = JsonLoaderError;
+    type Error = JsonAssetError;
 
     async fn load(
         &self,
@@ -79,5 +84,37 @@ where
 
     fn extensions(&self) -> &[&str] {
         &self.extensions
+    }
+}
+
+/// Saves your asset type `A` to JSON files
+#[derive(TypePath)]
+pub struct JsonAssetSaver<A> {
+    _marker: PhantomData<A>,
+}
+
+impl<A> Default for JsonAssetSaver<A> {
+    fn default() -> Self {
+        Self {
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<A: Asset + for<'de> Deserialize<'de> + Serialize> AssetSaver for JsonAssetSaver<A> {
+    type Asset = A;
+    type Settings = ();
+    type OutputLoader = JsonAssetLoader<A>;
+    type Error = JsonAssetError;
+
+    async fn save(
+        &self,
+        writer: &mut bevy_asset::io::Writer,
+        asset: bevy_asset::saver::SavedAsset<'_, Self::Asset>,
+        _settings: &Self::Settings,
+    ) -> Result<<Self::OutputLoader as AssetLoader>::Settings, Self::Error> {
+        let bytes = serde_json::to_vec(asset.get())?;
+        writer.write_all(&bytes).await?;
+        Ok(())
     }
 }

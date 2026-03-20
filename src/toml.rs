@@ -1,7 +1,8 @@
 use bevy_app::{App, Plugin};
 use bevy_asset::io::Reader;
-use bevy_asset::{Asset, AssetApp, AssetLoader, LoadContext};
+use bevy_asset::{Asset, AssetApp, AssetLoader, AsyncWriteExt, LoadContext, saver::AssetSaver};
 use bevy_reflect::TypePath;
+use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 use std::str::from_utf8;
 use thiserror::Error;
@@ -45,20 +46,27 @@ pub struct TomlAssetLoader<A> {
     _marker: PhantomData<A>,
 }
 
-/// Possible errors that can be produced by [`TomlAssetLoader`]
+/// Possible errors that can be produced by [`TomlAssetLoader`] or [`TomlAssetSaver`]
 #[non_exhaustive]
 #[derive(Debug, Error)]
-pub enum TomlLoaderError {
+pub enum TomlAssetError {
     /// An [IO Error](std::io::Error)
     #[error("Could not read the file: {0}")]
     Io(#[from] std::io::Error),
     /// A [conversion Error](std::str::Utf8Error)
     #[error("Could not interpret as UTF-8: {0}")]
     FormatError(#[from] std::str::Utf8Error),
-    /// A [TOML Error](serde_toml::de::Error)
+    /// A [TOML deserialization Error](serde_toml::de::Error)
     #[error("Could not parse TOML: {0}")]
-    TomlError(#[from] serde_toml::de::Error),
+    TomlDeError(#[from] serde_toml::de::Error),
+    /// A [TOML serialization Error](serde_toml::ser::Error)
+    #[error("Could not serialize TOML: {0}")]
+    TomlSerError(#[from] serde_toml::ser::Error),
 }
+
+/// Deprecated alias for [`TomlAssetError`]
+#[deprecated(since = "0.15.0", note = "Use TomlAssetError instead")]
+pub type TomlLoaderError = TomlAssetError;
 
 impl<A> AssetLoader for TomlAssetLoader<A>
 where
@@ -66,7 +74,7 @@ where
 {
     type Asset = A;
     type Settings = ();
-    type Error = TomlLoaderError;
+    type Error = TomlAssetError;
 
     async fn load(
         &self,
@@ -82,5 +90,37 @@ where
 
     fn extensions(&self) -> &[&str] {
         &self.extensions
+    }
+}
+
+/// Saves your asset type `A` to TOML files
+#[derive(TypePath)]
+pub struct TomlAssetSaver<A> {
+    _marker: PhantomData<A>,
+}
+
+impl<A> Default for TomlAssetSaver<A> {
+    fn default() -> Self {
+        Self {
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<A: Asset + for<'de> Deserialize<'de> + Serialize> AssetSaver for TomlAssetSaver<A> {
+    type Asset = A;
+    type Settings = ();
+    type OutputLoader = TomlAssetLoader<A>;
+    type Error = TomlAssetError;
+
+    async fn save(
+        &self,
+        writer: &mut bevy_asset::io::Writer,
+        asset: bevy_asset::saver::SavedAsset<'_, Self::Asset>,
+        _settings: &Self::Settings,
+    ) -> Result<<Self::OutputLoader as AssetLoader>::Settings, Self::Error> {
+        let toml = serde_toml::to_string(asset.get())?;
+        writer.write_all(toml.as_bytes()).await?;
+        Ok(())
     }
 }

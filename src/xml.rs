@@ -1,8 +1,9 @@
 use bevy_app::{App, Plugin};
 use bevy_asset::io::Reader;
-use bevy_asset::{Asset, AssetApp, AssetLoader, LoadContext};
+use bevy_asset::{Asset, AssetApp, AssetLoader, AsyncWriteExt, LoadContext, saver::AssetSaver};
 use bevy_reflect::TypePath;
 use quick_xml::de::from_str;
+use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 use std::str::from_utf8;
 use thiserror::Error;
@@ -47,20 +48,27 @@ pub struct XmlAssetLoader<A> {
     _marker: PhantomData<A>,
 }
 
-/// Possible errors that can be produced by [`XmlAssetLoader`]
+/// Possible errors that can be produced by [`XmlAssetLoader`] or [`XmlAssetSaver`]
 #[non_exhaustive]
 #[derive(Debug, Error)]
-pub enum XmlLoaderError {
+pub enum XmlAssetError {
     /// An [IO Error](std::io::Error)
     #[error("Could not read the file: {0}")]
     Io(#[from] std::io::Error),
     /// A [conversion Error](std::str::Utf8Error)
     #[error("Could not interpret as UTF-8: {0}")]
     FormatError(#[from] std::str::Utf8Error),
-    /// A [XML Error](quick_xml::DeError)
+    /// A [XML deserialization Error](quick_xml::DeError)
     #[error("Could not parse XML: {0}")]
-    XmlError(#[from] quick_xml::DeError),
+    XmlDeError(#[from] quick_xml::DeError),
+    /// A XML serialization error
+    #[error("Could not serialize XML: {0}")]
+    XmlSerError(String),
 }
+
+/// Deprecated alias for [`XmlAssetError`]
+#[deprecated(since = "0.15.0", note = "Use XmlAssetError instead")]
+pub type XmlLoaderError = XmlAssetError;
 
 impl<A> AssetLoader for XmlAssetLoader<A>
 where
@@ -68,7 +76,7 @@ where
 {
     type Asset = A;
     type Settings = ();
-    type Error = XmlLoaderError;
+    type Error = XmlAssetError;
 
     async fn load(
         &self,
@@ -84,5 +92,38 @@ where
 
     fn extensions(&self) -> &[&str] {
         &self.extensions
+    }
+}
+
+/// Saves your asset type `A` to XML files
+#[derive(TypePath)]
+pub struct XmlAssetSaver<A> {
+    _marker: PhantomData<A>,
+}
+
+impl<A> Default for XmlAssetSaver<A> {
+    fn default() -> Self {
+        Self {
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<A: Asset + for<'de> Deserialize<'de> + Serialize> AssetSaver for XmlAssetSaver<A> {
+    type Asset = A;
+    type Settings = ();
+    type OutputLoader = XmlAssetLoader<A>;
+    type Error = XmlAssetError;
+
+    async fn save(
+        &self,
+        writer: &mut bevy_asset::io::Writer,
+        asset: bevy_asset::saver::SavedAsset<'_, Self::Asset>,
+        _settings: &Self::Settings,
+    ) -> Result<<Self::OutputLoader as AssetLoader>::Settings, Self::Error> {
+        let xml = quick_xml::se::to_string(asset.get())
+            .map_err(|e| XmlAssetError::XmlSerError(e.to_string()))?;
+        writer.write_all(xml.as_bytes()).await?;
+        Ok(())
     }
 }

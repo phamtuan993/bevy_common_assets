@@ -1,7 +1,8 @@
 use bevy_app::{App, Plugin};
 use bevy_asset::io::Reader;
-use bevy_asset::{Asset, AssetApp, AssetLoader, LoadContext};
+use bevy_asset::{Asset, AssetApp, AssetLoader, AsyncWriteExt, LoadContext, saver::AssetSaver};
 use bevy_reflect::TypePath;
+use serde::{Deserialize, Serialize};
 use serde_ron::de::from_bytes;
 use std::marker::PhantomData;
 use thiserror::Error;
@@ -45,17 +46,24 @@ pub struct RonAssetLoader<A> {
     _marker: PhantomData<A>,
 }
 
-/// Possible errors that can be produced by [`RonAssetLoader`]
+/// Possible errors that can be produced by [`RonAssetLoader`] or [`RonAssetSaver`]
 #[non_exhaustive]
 #[derive(Debug, Error)]
-pub enum RonLoaderError {
+pub enum RonAssetError {
     /// An [IO Error](std::io::Error)
     #[error("Could not read the file: {0}")]
     Io(#[from] std::io::Error),
-    /// A [RON Error](serde_ron::error::SpannedError)
+    /// A [RON deserialization Error](serde_ron::error::SpannedError)
     #[error("Could not parse RON: {0}")]
-    RonError(#[from] serde_ron::error::SpannedError),
+    RonDeError(#[from] serde_ron::error::SpannedError),
+    /// A [RON serialization Error](serde_ron::Error)
+    #[error("Could not serialize RON: {0}")]
+    RonSerError(#[from] serde_ron::Error),
 }
+
+/// Deprecated alias for [`RonAssetError`]
+#[deprecated(since = "0.15.0", note = "Use RonAssetError instead")]
+pub type RonLoaderError = RonAssetError;
 
 impl<A> AssetLoader for RonAssetLoader<A>
 where
@@ -63,7 +71,7 @@ where
 {
     type Asset = A;
     type Settings = ();
-    type Error = RonLoaderError;
+    type Error = RonAssetError;
 
     async fn load(
         &self,
@@ -79,5 +87,37 @@ where
 
     fn extensions(&self) -> &[&str] {
         &self.extensions
+    }
+}
+
+/// Saves your asset type `A` to RON files
+#[derive(TypePath)]
+pub struct RonAssetSaver<A> {
+    _marker: PhantomData<A>,
+}
+
+impl<A> Default for RonAssetSaver<A> {
+    fn default() -> Self {
+        Self {
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<A: Asset + for<'de> Deserialize<'de> + Serialize> AssetSaver for RonAssetSaver<A> {
+    type Asset = A;
+    type Settings = ();
+    type OutputLoader = RonAssetLoader<A>;
+    type Error = RonAssetError;
+
+    async fn save(
+        &self,
+        writer: &mut bevy_asset::io::Writer,
+        asset: bevy_asset::saver::SavedAsset<'_, Self::Asset>,
+        _settings: &Self::Settings,
+    ) -> Result<<Self::OutputLoader as AssetLoader>::Settings, Self::Error> {
+        let ron = serde_ron::ser::to_string(asset.get())?;
+        writer.write_all(ron.as_bytes()).await?;
+        Ok(())
     }
 }
