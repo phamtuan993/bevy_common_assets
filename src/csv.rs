@@ -109,6 +109,8 @@ where
         reader.read_to_end(&mut bytes).await?;
         let mut reader = csv::ReaderBuilder::new()
             .delimiter(self.delimiter)
+            .trim(csv::Trim::All)
+            .flexible(true)
             .from_reader(bytes.as_slice());
         let mut rows = vec![];
         for row in reader.deserialize() {
